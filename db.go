@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -195,6 +196,43 @@ func SetQueryResultCount(ctx context.Context, count int) {
 		span.SetStatus(codes.Ok, "Query successful")
 	}
 	span.End() // Close the span after setting attributes
+}
+
+// FindAll wraps Find + All operations with automatic count setting
+// This function performs Find, decodes all results, sets the count automatically, and closes the span
+// results must be a pointer to a slice (e.g., &[]bson.M, &[]YourStruct)
+func (tc *TracedCollectionWrapper) FindAll(ctx context.Context, filter interface{}, results interface{}, opts ...*options.FindOptions) error {
+	// Call Find to get cursor and context with active span
+	cursor, dbCtx, err := tc.Find(ctx, filter, opts...)
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(dbCtx)
+
+	// Decode all documents
+	if err = cursor.All(dbCtx, results); err != nil {
+		span := trace.SpanFromContext(dbCtx)
+		if span.IsRecording() {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "Failed to decode documents")
+			span.End()
+		}
+		return err
+	}
+
+	// Get count from results using reflection
+	var count int
+	rv := reflect.ValueOf(results)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.Slice {
+		count = rv.Len()
+	}
+
+	// Set result count on span and close it automatically
+	SetQueryResultCount(dbCtx, count)
+	return nil
 }
 
 // FindOne wraps mongo.Collection.FindOne with automatic span creation

@@ -42,7 +42,7 @@ func main() {
     db := client.Database("mydb")
 
     // Create traced database wrapper
-    tracedDB := db.NewTracedDatabase(db, "mydb")
+    tracedDB := db.NewTracedDatabase(db)
 
     // Get traced collection
     tracedCollection := tracedDB.Collection("users")

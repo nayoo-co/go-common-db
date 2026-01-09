@@ -19,14 +19,12 @@ import (
 // TracedDatabase wraps mongo.Database to provide traced collections
 type TracedDatabase struct {
 	*mongo.Database
-	dbName string
 }
 
-// NewTracedDatabase creates a new TracedDatabase with database and dbName
-func NewTracedDatabase(database *mongo.Database, dbName string) *TracedDatabase {
+// NewTracedDatabase creates a new TracedDatabase with database
+func NewTracedDatabase(database *mongo.Database) *TracedDatabase {
 	return &TracedDatabase{
 		Database: database,
-		dbName:   dbName,
 	}
 }
 
@@ -34,7 +32,6 @@ func NewTracedDatabase(database *mongo.Database, dbName string) *TracedDatabase 
 func (td *TracedDatabase) Collection(name string) *TracedCollectionWrapper {
 	return &TracedCollectionWrapper{
 		Collection:     td.Database.Collection(name),
-		dbName:         td.dbName,
 		collectionName: name,
 	}
 }
@@ -42,7 +39,6 @@ func (td *TracedDatabase) Collection(name string) *TracedCollectionWrapper {
 // TracedCollectionWrapper wraps mongo.Collection to automatically create spans for all operations
 type TracedCollectionWrapper struct {
 	*mongo.Collection
-	dbName         string
 	collectionName string
 }
 
@@ -160,14 +156,14 @@ func (tc *TracedCollectionWrapper) createSpan(ctx context.Context, operation str
 	spanName := functionName
 
 	// Use database.collection format for db.name (X-Ray will use this as segment name - the green span)
-	dbNameWithCollection := fmt.Sprintf("%s.%s", tc.dbName, tc.collectionName)
+	dbNameWithCollection := fmt.Sprintf("%s.%s", tc.Collection.Database().Name(), tc.collectionName)
 
 	baseAttrs := []attribute.KeyValue{
 		attribute.String("db.system", "mongodb"),
 		// Use database.collection format for db.name - X-Ray will use this as segment name
 		attribute.String("db.name", dbNameWithCollection),
 		// Store original database name in a separate attribute
-		attribute.String("db.database", tc.dbName),
+		attribute.String("db.database", tc.Collection.Database().Name()),
 		attribute.String("db.collection", tc.collectionName),
 		attribute.String("db.operation", operation),
 	}

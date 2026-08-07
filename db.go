@@ -175,7 +175,12 @@ func (tc *TracedCollectionWrapper) createSpan(ctx context.Context, operation str
 }
 
 // Find wraps mongo.Collection.Find with automatic span creation
-// Returns cursor and context with active span for setting result count later
+// Returns cursor and context with active span for setting result count later.
+// The returned context's 10s timeout is canceled shortly after this function
+// returns (it only bounds the initial round trip) - callers that iterate the
+// cursor beyond the buffered first batch must supply their own live context
+// rather than the one returned here. FindAll below owns its own context for
+// exactly this reason instead of reusing Find()'s.
 func (tc *TracedCollectionWrapper) Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, context.Context, error) {
 	queryStr := buildMongoShellCommand("find", tc.collectionName, filter)
 	ctx, span := tc.createSpan(ctx, "find", "Find", attribute.String("db.query.string", queryStr))
@@ -211,22 +216,32 @@ func SetQueryResultCount(ctx context.Context, count int) {
 // FindAll wraps Find + All operations with automatic count setting
 // This function performs Find, decodes all results, sets the count automatically, and closes the span
 // results must be a pointer to a slice (e.g., &[]bson.M, &[]YourStruct)
+//
+// FindAll owns its own span and timeout context rather than reusing Find()'s,
+// because decoding a multi-batch result via cursor.All requires the context to
+// stay live through any getMore round trips, not just through the initial
+// Find() call.
 func (tc *TracedCollectionWrapper) FindAll(ctx context.Context, filter interface{}, results interface{}, opts ...*options.FindOptions) error {
-	// Call Find to get cursor and context with active span
-	cursor, dbCtx, err := tc.Find(ctx, filter, opts...)
+	queryStr := buildMongoShellCommand("find", tc.collectionName, filter)
+	ctx, span := tc.createSpan(ctx, "find", "Find", attribute.String("db.query.string", queryStr))
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cursor, err := tc.Collection.Find(ctx, filter, opts...)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to query DocumentDB")
+		span.End()
 		return err
 	}
-	defer cursor.Close(dbCtx)
+	defer cursor.Close(ctx)
 
-	// Decode all documents
-	if err = cursor.All(dbCtx, results); err != nil {
-		span := trace.SpanFromContext(dbCtx)
-		if span.IsRecording() {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "Failed to decode documents")
-			span.End()
-		}
+	// Decode all documents, including any additional batches fetched via getMore
+	if err = cursor.All(ctx, results); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to decode documents")
+		span.End()
 		return err
 	}
 
@@ -241,7 +256,7 @@ func (tc *TracedCollectionWrapper) FindAll(ctx context.Context, filter interface
 	}
 
 	// Set result count on span and close it automatically
-	SetQueryResultCount(dbCtx, count)
+	SetQueryResultCount(ctx, count)
 	return nil
 }
 

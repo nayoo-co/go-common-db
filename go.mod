@@ -1,4 +1,4 @@
-module github.com/serpentdark/go-common-db
+module github.com/nayoo-co/go-common-db
 
 go 1.25.5
 
